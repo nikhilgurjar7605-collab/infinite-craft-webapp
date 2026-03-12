@@ -8,6 +8,7 @@ const BASE_ELEMENTS = [
 ];
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const OPENROUTER_KEY = import.meta.env.VITE_OPENROUTER_KEY;
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
@@ -155,13 +156,48 @@ function offlineCombine(a, b) {
 async function combineWithGemini(elem1, elem2) {
   const prompt = `You are the Infinite Craft game. Combine "${elem1}" + "${elem2}". Reply ONLY with valid JSON like: {"result":"Steam","emoji":"♨️"} — no markdown, no explanation, just JSON.`;
 
+  // Try OpenRouter first (most reliable, many free models)
+  if (OPENROUTER_KEY) {
+    const orModels = [
+      "meta-llama/llama-3.1-8b-instruct:free",
+      "mistralai/mistral-7b-instruct:free",
+      "google/gemma-2-9b-it:free",
+    ];
+    for (const model of orModels) {
+      try {
+        const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${OPENROUTER_KEY}`,
+            "HTTP-Referer": window.location.origin,
+            "X-Title": "Infinite Craft",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 80,
+            temperature: 0.8,
+          }),
+        });
+        if (res.status === 429 || res.status === 503) { await new Promise(r => setTimeout(r, 800)); continue; }
+        if (!res.ok) continue;
+        const data = await res.json();
+        const text = data.choices?.[0]?.message?.content || "";
+        const match = text.match(/\{[^}]+\}/);
+        if (!match) continue;
+        const parsed = JSON.parse(match[0]);
+        if (parsed.result && parsed.emoji) return parsed;
+      } catch { continue; }
+    }
+  }
+
   // Try Gemini if key exists
   if (GEMINI_API_KEY) {
     const models = [
       "gemini-2.0-flash-lite",
       "gemini-2.0-flash",
       "gemini-1.5-flash-latest",
-      "gemini-1.5-flash-8b-latest",
     ];
     for (const model of models) {
       try {
@@ -176,10 +212,7 @@ async function combineWithGemini(elem1, elem2) {
             }),
           }
         );
-        if (res.status === 429 || res.status === 404) {
-          await new Promise(r => setTimeout(r, 500));
-          continue;
-        }
+        if (res.status === 429 || res.status === 404) continue;
         if (!res.ok) continue;
         const data = await res.json();
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -191,7 +224,7 @@ async function combineWithGemini(elem1, elem2) {
     }
   }
 
-  // All models failed or no key — use offline
+  // All APIs failed — use offline combos
   return offlineCombine(elem1, elem2);
 }
 
