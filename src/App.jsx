@@ -97,13 +97,8 @@ async function getLeaderboard() {
   return Object.values(counts).sort((a, b) => b.count - a.count).slice(0, 10);
 }
 
-// ── Gemini AI ─────────────────────────────────────────────
-const GEMINI_MODELS = [
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
-  "gemini-1.5-flash-8b",
-];
-
+// ── AI Combination ────────────────────────────────────────
+// Offline fallback recipes (always works, no API needed)
 function offlineCombine(a, b) {
   const combos = {
     "earth+water": { result: "Mud", emoji: "🟫" },
@@ -113,51 +108,90 @@ function offlineCombine(a, b) {
     "water+wind": { result: "Wave", emoji: "🌊" },
     "fire+wind": { result: "Smoke", emoji: "🌫️" },
     "mud+fire": { result: "Brick", emoji: "🧱" },
+    "mud+water": { result: "Swamp", emoji: "🌿" },
     "lava+water": { result: "Stone", emoji: "🪨" },
     "lava+wind": { result: "Ash", emoji: "🌫️" },
     "steam+earth": { result: "Geyser", emoji: "♨️" },
     "smoke+water": { result: "Cloud", emoji: "☁️" },
     "stone+fire": { result: "Metal", emoji: "⚙️" },
     "stone+water": { result: "Sand", emoji: "🏖️" },
+    "stone+wind": { result: "Pebble", emoji: "🪨" },
     "cloud+fire": { result: "Thunder", emoji: "⚡" },
     "cloud+wind": { result: "Storm", emoji: "⛈️" },
+    "cloud+water": { result: "Rain", emoji: "🌧️" },
+    "sand+fire": { result: "Glass", emoji: "🪟" },
+    "sand+water": { result: "Beach", emoji: "🏖️" },
+    "metal+fire": { result: "Steel", emoji: "🔩" },
+    "metal+wind": { result: "Bell", emoji: "🔔" },
+    "rain+earth": { result: "Plant", emoji: "🌱" },
+    "rain+fire": { result: "Rainbow", emoji: "🌈" },
+    "plant+fire": { result: "Smoke", emoji: "🌫️" },
+    "plant+water": { result: "Algae", emoji: "🌿" },
+    "plant+wind": { result: "Dandelion", emoji: "🌼" },
+    "plant+earth": { result: "Tree", emoji: "🌳" },
+    "tree+fire": { result: "Charcoal", emoji: "⬛" },
+    "tree+wind": { result: "Paper", emoji: "📄" },
+    "steel+stone": { result: "Blade", emoji: "🗡️" },
+    "thunder+metal": { result: "Lightning Rod", emoji: "⚡" },
+    "glass+fire": { result: "Lens", emoji: "🔍" },
+    "wave+stone": { result: "Pebble", emoji: "🪨" },
+    "storm+earth": { result: "Earthquake", emoji: "🌍" },
+    "ash+water": { result: "Soap", emoji: "🧼" },
+    "brick+brick": { result: "Wall", emoji: "🧱" },
+    "swamp+fire": { result: "Bog Gas", emoji: "💨" },
+    "charcoal+fire": { result: "Diamond", emoji: "💎" },
   };
   const key = [a.toLowerCase(), b.toLowerCase()].sort().join("+");
-  return combos[key] || { result: a.slice(0,3) + b.slice(0,3), emoji: "✨" };
+  if (combos[key]) return combos[key];
+  // Smart generic fallback
+  const emojis = ["✨","🔮","⚗️","🌀","💫","🎯","🔥","❄️","🌊","🌪️"];
+  const emoji = emojis[Math.abs(a.length + b.length) % emojis.length];
+  const result = a.length <= b.length
+    ? a + " " + b.split(" ")[0]
+    : b + " " + a.split(" ")[0];
+  return { result, emoji };
 }
 
 async function combineWithGemini(elem1, elem2) {
-  if (!GEMINI_API_KEY) throw new Error("No Gemini API key");
-  const prompt = `You are the Infinite Craft game. Combine "${elem1}" + "${elem2}". Reply with ONLY valid JSON, no markdown, no explanation: {"result":"ElementName","emoji":"🔥"}`;
-  let lastErr = null;
-  for (const model of GEMINI_MODELS) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.8, maxOutputTokens: 60 },
-          }),
+  const prompt = `You are the Infinite Craft game. Combine "${elem1}" + "${elem2}". Reply ONLY with valid JSON like: {"result":"Steam","emoji":"♨️"} — no markdown, no explanation, just JSON.`;
+
+  // Try Gemini if key exists
+  if (GEMINI_API_KEY) {
+    const models = [
+      "gemini-2.0-flash-lite",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash-latest",
+      "gemini-1.5-flash-8b-latest",
+    ];
+    for (const model of models) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0.8, maxOutputTokens: 80 },
+            }),
+          }
+        );
+        if (res.status === 429 || res.status === 404) {
+          await new Promise(r => setTimeout(r, 500));
+          continue;
         }
-      );
-      if (res.status === 429) { await new Promise(r => setTimeout(r, 1200)); continue; }
-      if (!res.ok) throw new Error(`Gemini error: ${res.status}`);
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      const match = text.match(/\{[^}]+\}/);
-      if (!match) throw new Error("Bad response");
-      const parsed = JSON.parse(match[0]);
-      if (!parsed.result || !parsed.emoji) throw new Error("Missing fields");
-      return parsed;
-    } catch (err) {
-      lastErr = err;
-      if (err.message?.includes("429") || err.message === "RATE_LIMIT") continue;
-      throw err;
+        if (!res.ok) continue;
+        const data = await res.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const match = text.match(/\{[^}]+\}/);
+        if (!match) continue;
+        const parsed = JSON.parse(match[0]);
+        if (parsed.result && parsed.emoji) return parsed;
+      } catch { continue; }
     }
   }
+
+  // All models failed or no key — use offline
   return offlineCombine(elem1, elem2);
 }
 
